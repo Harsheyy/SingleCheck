@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/sync_listings",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/sync_metadata",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
