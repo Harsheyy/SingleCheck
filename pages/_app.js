@@ -1,9 +1,15 @@
 import React from "react";
+import Head from "next/head";
 import { Analytics } from "@vercel/analytics/next";
 
 export default function App({ Component, pageProps }) {
   return (
     <>
+      <Head>
+        <title>Single Check</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+      </Head>
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
         * {
