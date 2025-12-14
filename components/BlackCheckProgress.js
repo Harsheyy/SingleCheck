@@ -33,7 +33,7 @@ export default function BlackCheckProgress({
         <p style={{
           fontFamily: "Inter, sans-serif",
           fontWeight: 600,
-          fontSize: "0.75em",
+          fontSize: "1.25em",
           color: "#fff",
           margin: 0,
           whiteSpace: "nowrap"
@@ -66,14 +66,14 @@ export default function BlackCheckProgress({
               whiteSpace: "nowrap"
             }}>
               <p style={{
-                fontSize: "0.75em",
+                fontSize: "1em",
                 color: "#fff",
                 margin: 0
               }}>
                 {checksAllocated}
               </p>
               <p style={{
-                fontSize: "0.5em",
+                fontSize: "0.75em",
                 color: "#7c7c7c",
                 margin: 0
               }}>
@@ -90,14 +90,14 @@ export default function BlackCheckProgress({
               whiteSpace: "nowrap"
             }}>
               <p style={{
-                fontSize: "0.75em",
+                fontSize: "1em",
                 color: "#fff",
                 margin: 0
               }}>
                 {blkchkAllocated}
               </p>
               <p style={{
-                fontSize: "0.5em",
+                fontSize: "0.75em",
                 color: "#7c7c7c",
                 margin: 0
               }}>
@@ -142,7 +142,7 @@ export default function BlackCheckProgress({
               <p style={{
                 fontFamily: "Inter, sans-serif",
                 fontWeight: 600,
-                fontSize: "10px",
+                fontSize: "12px",
                 color: "#fff",
                 margin: 0,
                 whiteSpace: "nowrap"
@@ -153,7 +153,7 @@ export default function BlackCheckProgress({
             <p style={{
               fontFamily: "Inter, sans-serif",
               fontWeight: 400,
-              fontSize: "8px",
+              fontSize: "12px",
               color: "#7c7c7c",
               margin: 0,
               whiteSpace: "nowrap"
