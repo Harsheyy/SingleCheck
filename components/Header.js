@@ -6,27 +6,97 @@ const CheckIcon = ({ color = "currentColor", ...props }) => (
   </svg>
 );
 
-export default function Header() {
+export default function Header({ lastUpdated, onManualUpdate, isUpdating }) {
   return (
     <div style={{
       display: "flex",
       alignItems: "center",
-      justifyContent: "flex-start",
-      gap: "8px",
+      justifyContent: "space-between",
       width: "100%",
+      flexWrap: "wrap",
+      gap: "16px",
       flexShrink: 0
     }}>
-      <CheckIcon color="#fff" style={{ width: "24px", height: "24px", display: "block" }} />
-      <p style={{
-        fontFamily: "Inter, sans-serif",
-        fontWeight: 600,
-        fontSize: "1.5em",
-        color: "#fff",
-        margin: 0,
-        whiteSpace: "nowrap"
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-start",
+        gap: "8px",
       }}>
-        Single Check Calculator
-      </p>
+        <CheckIcon color="#fff" style={{ width: "24px", height: "24px", display: "block" }} />
+        <p style={{
+          fontFamily: "Inter, sans-serif",
+          fontWeight: 600,
+          fontSize: "1.5em",
+          color: "#fff",
+          margin: 0,
+          whiteSpace: "nowrap"
+        }}>
+          Single Check Calculator
+        </p>
+      </div>
+
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "12px"
+      }}>
+        {isUpdating ? (
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}>
+             <div className="spinner" style={{
+                width: "16px",
+                height: "16px",
+                border: "2px solid #333",
+                borderTop: "2px solid #fff",
+                borderRadius: "50%",
+                animation: "spin 1s linear infinite"
+             }} />
+             <span style={{
+                fontFamily: "Inter, sans-serif",
+                fontSize: "0.85em",
+                color: "#7c7c7c"
+             }}>Updating...</span>
+             <style>{`
+                @keyframes spin {
+                  0% { transform: rotate(0deg); }
+                  100% { transform: rotate(360deg); }
+                }
+             `}</style>
+          </div>
+        ) : (
+          <p style={{
+            fontFamily: "Inter, sans-serif",
+            fontSize: "0.85em",
+            color: "#7c7c7c",
+            margin: 0
+          }}>
+            Last updated: {lastUpdated || "Never"}
+          </p>
+        )}
+        
+        <button 
+          onClick={onManualUpdate}
+          disabled={isUpdating}
+          style={{
+            backgroundColor: isUpdating ? "#333" : "#fff",
+            color: isUpdating ? "#7c7c7c" : "#000",
+            border: "none",
+            borderRadius: "4px",
+            padding: "6px 12px",
+            fontFamily: "Inter, sans-serif",
+            fontSize: "0.85em",
+            fontWeight: 500,
+            cursor: isUpdating ? "not-allowed" : "pointer",
+            transition: "all 0.2s"
+          }}
+        >
+          {isUpdating ? "Syncing..." : "Update Data"}
+        </button>
+      </div>
     </div>
   );
 }

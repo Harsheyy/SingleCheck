@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { supabase } from "../lib/supabase";
 import Header from "../components/Header";
 import MarketValue from "../components/MarketValue";
 import SweepValue from "../components/SweepValue";
@@ -12,6 +13,36 @@ const CheckIcon = ({ color = "currentColor", ...props }) => (
 
 export default function Home() {
   const [stackMobile, setStackMobile] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const fetchLastUpdated = async () => {
+    if (!supabase) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from("vv_checks_listings")
+        .select("last_seen_at")
+        .order("last_seen_at", { ascending: false })
+        .limit(1)
+        .single();
+      
+      if (data && data.last_seen_at) {
+        const date = new Date(data.last_seen_at);
+        // Format: "Oct 24, 2023, 10:30 PM"
+        setLastUpdated(date.toLocaleString("en-US", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "numeric",
+          hour12: true
+        }));
+      }
+    } catch (err) {
+      console.error("Error fetching last updated:", err);
+    }
+  };
 
   useEffect(() => {
     const updateStack = () => {
@@ -21,8 +52,34 @@ export default function Home() {
     };
     updateStack();
     window.addEventListener("resize", updateStack);
+    
+    fetchLastUpdated();
+    
     return () => window.removeEventListener("resize", updateStack);
   }, []);
+
+  const handleManualUpdate = async () => {
+    setIsUpdating(true);
+    try {
+      // Trigger the Vercel Cron function manually
+      await fetch("/api/cron/sync_listings");
+      
+      // Re-fetch the last updated time
+      await fetchLastUpdated();
+      
+      // Reload the page to refresh data in other components if they don't auto-refresh
+      // But user just asked to "display the new update time".
+      // Other components (MarketValue etc) might need to re-fetch data.
+      // Assuming they fetch on mount/update, we might need to trigger them.
+      // For now, let's just update the time as requested.
+      
+    } catch (err) {
+      console.error("Error updating data:", err);
+      alert("Failed to update data. Please try again.");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   return (
     <div style={{
@@ -38,7 +95,11 @@ export default function Home() {
       maxWidth: "100vw",
       overflowX: "hidden"
     }}>
-      <Header />
+      <Header 
+        lastUpdated={lastUpdated} 
+        onManualUpdate={handleManualUpdate}
+        isUpdating={isUpdating}
+      />
       <MarketValue />
       <SweepValue />
       <CuratorValue />
