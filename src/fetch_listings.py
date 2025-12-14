@@ -169,66 +169,24 @@ def reduce_to_floor_per_token(
     return list(floors.values())
 
 
-def fetch_best_offers_for_collection(collection_slug: str) -> Dict[str, str]:
-    base_url = f"https://api.opensea.io/api/v2/offers/collection/{collection_slug}/best"
-    headers = {
-        "accept": "*/*",
-        "x-api-key": OPENSEA_API_KEY,
-    }
-
-    offers_map: Dict[str, str] = {}
-    next_cursor = None
-
-    while True:
-        url = base_url
-        if next_cursor:
-            url += f"?next={next_cursor}"
-
-        res = requests.get(url, headers=headers, timeout=20)
-        if res.status_code == 404:
-            return {}
-        res.raise_for_status()
-        data = res.json()
-
-        for item in data.get("offers", []):
-            params = item.get("protocol_data", {}).get("parameters", {})
-            offer = params.get("offer", [])
-            token_id = offer[0].get("identifierOrCriteria") if offer else None
-            wei_price = item.get("price", {}).get("current", {}).get("value")
-            eth_price = wei_to_eth(wei_price) if wei_price is not None else None
-            if token_id is None or eth_price is None:
-                continue
-            existing = offers_map.get(token_id)
-            if existing is None:
-                offers_map[token_id] = eth_price
-            else:
-                if Decimal(eth_price) > Decimal(existing):
-                    offers_map[token_id] = eth_price
-
-        next_cursor = data.get("next")
-        if not next_cursor:
-            break
-
-    return offers_map
-
-
 # ---------------------------------------------------------
 # Sync OpenSea Originals -> vv_checks_listings
 # ---------------------------------------------------------
 def sync_opensea_originals(table_name: str) -> None:
-    """
-    Sync OpenSea Originals (vv-checks-originals) into vv_checks_listings.
-    Only Originals live in this table, shared with TokenWorks.
-    """
     collection_slug = "vv-checks-originals"
     source = "opensea"
 
     listings = fetch_all_listings_for_collection(collection_slug)
     floor_listings = reduce_to_floor_per_token(listings)
-    print(f"[originals] Fetching best offers for {len(floor_listings)} tokens…")
+    
+    print(f"[originals] Processing {len(floor_listings)} listings...")
     offers_set = 0
+    
     for row in floor_listings:
-        ho = fetch_best_offer_eth(collection_slug, row["token_id"])  # per-NFT endpoint
+        tid = row["token_id"]
+        
+        # Always fetch individual offer
+        ho = fetch_best_offer_eth(collection_slug, tid)
         if ho is not None:
             row["highest_offer_eth"] = ho
             offers_set += 1
@@ -308,19 +266,55 @@ def fetch_tokenworks_check_token_ids() -> List[str]:
     return token_ids
 
 
-def fetch_tokenworks_listings() -> List[Dict[str, Any]]:
+def fetch_tokenworks_listings(table_name: str) -> List[Dict[str, Any]]:
     """
-    For each Checks token owned by TokenWorks, call nftForSale(tokenId)
-    and return those with priceWei > 0 as active listings.
+    For each Checks token owned by TokenWorks:
+      1. Check if we already have a valid price in the DB (source='tokenworks').
+      2. If yes, use that (skip on-chain call).
+      3. If no (or price is null), call nftForSale(tokenId) on-chain.
+    Returns active listings (price > 0).
     """
     token_ids = fetch_tokenworks_check_token_ids()
     listings: List[Dict[str, Any]] = []
 
+    # 1) Fetch existing cached prices to minimize RPC calls
+    # We only care about rows where source='tokenworks'
+    try:
+        resp = (
+            supabase.table(table_name)
+            .select("token_id, price_eth")
+            .eq("source", "tokenworks")
+            .execute()
+        )
+        db_rows = resp.data or []
+        # Map token_id -> price_eth
+        db_map = {str(row["token_id"]): row["price_eth"] for row in db_rows}
+    except Exception as e:
+        print(f"[tokenworks] Error fetching existing rows: {e}")
+        db_map = {}
+
+    print(f"[tokenworks] Found {len(token_ids)} owned tokens. Checking prices...")
+
     for idx, token_id in enumerate(token_ids):
+        # Check cache first
+        cached_price = db_map.get(token_id)
+        
+        # If we have a valid cached price, use it and skip RPC
+        if cached_price is not None:
+            listings.append(
+                {
+                    "token_id": token_id,
+                    "price_eth": cached_price,
+                    "owner": TOKENWORKS_ADDRESS,
+                }
+            )
+            continue
+
+        # Otherwise, check on-chain
         tid_int = int(token_id)
         try:
             price_wei = tokenworks_contract.functions.nftForSale(tid_int).call()
-        except Exception as e:
+        except Exception:
             continue
 
         # 0 = not for sale
@@ -343,11 +337,17 @@ def fetch_tokenworks_listings() -> List[Dict[str, Any]]:
 def sync_tokenworks(table_name: str) -> None:
     """
     Sync TokenWorks listings into vv_checks_listings with source='tokenworks'.
-    This will overwrite any existing row for that token_id (e.g. older OpenSea row),
-    which matches your mental model: at any given time, only the current listing matters.
+    This will overwrite any existing row for that token_id (e.g. older OpenSea row).
+    We explicitly set highest_offer_eth to None as these listings don't accept WETH offers.
     """
-    listings = fetch_tokenworks_listings()
-
+    listings = fetch_tokenworks_listings(table_name)
+    
+    print(f"[tokenworks] Processing {len(listings)} listings (skipping offers)...")
+    
+    # Explicitly clear offers
+    for row in listings:
+        row["highest_offer_eth"] = None
+    
     batch_size = 100
     now_ts = datetime.now(timezone.utc).isoformat()
     current_ids = {l["token_id"] for l in listings}
@@ -398,10 +398,12 @@ def sync_editions(table_name: str = "vv_editions_listings") -> None:
     batch_size = 100
     now_ts = datetime.now(timezone.utc).isoformat()
 
-    print(f"[editions] Fetching best offers for {len(floor_listings)} tokens…")
+    print(f"[editions] Processing {len(floor_listings)} listings...")
     offers_set = 0
     for row in floor_listings:
-        ho = fetch_best_offer_eth("vv-checks", row["token_id"])  # per-NFT endpoint
+        tid = row["token_id"]
+        
+        ho = fetch_best_offer_eth(collection_slug, tid)
         if ho is not None:
             row["highest_offer_eth"] = ho
             offers_set += 1
@@ -447,6 +449,7 @@ def sync_editions(table_name: str = "vv_editions_listings") -> None:
 # ---------------------------------------------------------
 if __name__ == "__main__":
     ORIGINALS_TABLE = "vv_checks_listings"
+    ORIGINALS_COLLECTION_SLUG = "vv-checks-originals"
 
     # 1) OpenSea Originals -> shared table
     sync_opensea_originals(ORIGINALS_TABLE)

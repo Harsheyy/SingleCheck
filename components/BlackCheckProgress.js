@@ -1,11 +1,13 @@
 import React from "react";
 
-export default function BlackCheckProgress() {
-  // Hard-coded values - will be replaced with Supabase data later
-  const checksAllocated = "3/64";
-  const blkchkAllocated = "0.04638671875";
-  const blkchkHolders = "137";
-  const progressPercent = 3.66; // 3/64 * 100
+export default function BlackCheckProgress({ 
+  checksAllocated = "0/64", 
+  blkchkAllocated = "0"
+}) {
+  // Parse inputs to numbers for progress calculation
+  // checksAllocated format is "X/64"
+  const checksCount = parseFloat(checksAllocated.split("/")[0]) || 0;
+  const progressPercent = (checksCount / 64) * 100;
 
   return (
     <div style={{
@@ -40,29 +42,27 @@ export default function BlackCheckProgress() {
         </p>
         <div style={{
           display: "flex",
-          alignItems: "flex-start",
+          alignItems: "flex-end",
           justifyContent: "space-between",
           width: "100%",
-          flexShrink: 0
+          flexShrink: 0,
+          gap: "24px",
+          flexWrap: "wrap"
         }}>
           <div style={{
-            display: "inline-grid",
-            gridTemplateColumns: "max-content",
-            gridTemplateRows: "max-content",
-            lineHeight: 0,
-            placeItems: "start",
+            display: "flex",
+            flexDirection: "row",
+            gap: "24px",
+            alignItems: "flex-start",
             flexShrink: 0
           }}>
             <div style={{
-              gridArea: "1 / 1",
               display: "flex",
               flexDirection: "column",
               fontFamily: "Inter, sans-serif",
               fontWeight: 400,
               gap: "4px",
               alignItems: "flex-start",
-              marginLeft: 0,
-              marginTop: 0,
               whiteSpace: "nowrap"
             }}>
               <p style={{
@@ -81,15 +81,12 @@ export default function BlackCheckProgress() {
               </p>
             </div>
             <div style={{
-              gridArea: "1 / 1",
               display: "flex",
               flexDirection: "column",
               fontFamily: "Inter, sans-serif",
               fontWeight: 400,
               gap: "4px",
               alignItems: "flex-start",
-              marginLeft: "81px",
-              marginTop: 0,
               whiteSpace: "nowrap"
             }}>
               <p style={{
@@ -107,33 +104,6 @@ export default function BlackCheckProgress() {
                 $BLKCHK allocated
               </p>
             </div>
-            <div style={{
-              gridArea: "1 / 1",
-              display: "flex",
-              flexDirection: "column",
-              fontFamily: "Inter, sans-serif",
-              fontWeight: 400,
-              gap: "4px",
-              alignItems: "flex-start",
-              marginLeft: "187px",
-              marginTop: 0,
-              whiteSpace: "nowrap"
-            }}>
-              <p style={{
-                fontSize: "0.75em",
-                color: "#fff",
-                margin: 0
-              }}>
-                {blkchkHolders}
-              </p>
-              <p style={{
-                fontSize: "0.5em",
-                color: "#7c7c7c",
-                margin: 0
-              }}>
-                $BLKCHK holders
-              </p>
-            </div>
           </div>
           <div style={{
             display: "flex",
@@ -141,27 +111,44 @@ export default function BlackCheckProgress() {
             gap: "8px",
             alignItems: "flex-start",
             justifyContent: "flex-end",
-            alignSelf: "stretch",
-            flexShrink: 0,
-            width: "500px"
+            flex: 1,
+            minWidth: "200px"
           }}>
             <div style={{
-              backgroundColor: "#333",
-              height: "4.31px",
-              borderRadius: "35.917px",
-              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
               width: "100%",
-              position: "relative"
+              gap: "8px"
             }}>
-              <div style={{
-                position: "absolute",
-                backgroundColor: "#fff",
-                top: "0.13px",
-                right: `${100 - progressPercent}%`,
-                bottom: "0.18px",
-                left: 0,
-                borderRadius: "35.917px"
-              }} />
+               <div style={{
+                backgroundColor: "#333",
+                height: "4.31px",
+                borderRadius: "35.917px",
+                flex: 1,
+                position: "relative",
+                overflow: "hidden"
+              }}>
+                <div style={{
+                  position: "absolute",
+                  backgroundColor: "#fff",
+                  top: 0,
+                  left: 0,
+                  bottom: 0,
+                  width: `${progressPercent}%`,
+                  borderRadius: "35.917px"
+                }} />
+              </div>
+              <p style={{
+                fontFamily: "Inter, sans-serif",
+                fontWeight: 600,
+                fontSize: "10px",
+                color: "#fff",
+                margin: 0,
+                whiteSpace: "nowrap"
+              }}>
+                {progressPercent.toFixed(2)}%
+              </p>
             </div>
             <p style={{
               fontFamily: "Inter, sans-serif",
