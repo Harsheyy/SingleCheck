@@ -1,7 +1,8 @@
 import os
 from decimal import Decimal
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Optional
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from dotenv import load_dotenv
@@ -85,7 +86,48 @@ def get_existing_token_ids(table_name: str, source: str | None = None) -> Set[st
         query = query.eq("source", source)
     resp = query.execute()
     rows = resp.data or []
-    return {row["token_id"] for row in rows}
+    return {str(row["token_id"]) for row in rows}
+
+
+def batch_upsert(table_name: str, data: List[Dict[str, Any]], batch_size: int = 100) -> None:
+    """
+    Upsert data in batches to Supabase.
+    """
+    if not data:
+        return
+        
+    for i in range(0, len(data), batch_size):
+        batch = data[i : i + batch_size]
+        supabase.table(table_name).upsert(
+            batch,
+            on_conflict="token_id",
+        ).execute()
+
+
+def delete_stale_tokens(
+    table_name: str, 
+    current_ids: Set[str], 
+    source: str | None = None, 
+    batch_size: int = 100
+) -> int:
+    """
+    Delete tokens from DB that are not in current_ids.
+    Returns number of deleted tokens.
+    """
+    existing_ids = get_existing_token_ids(table_name, source=source)
+    to_delete = list(existing_ids - current_ids)
+    
+    if not to_delete:
+        return 0
+
+    for i in range(0, len(to_delete), batch_size):
+        chunk = to_delete[i : i + batch_size]
+        query = supabase.table(table_name).delete().in_("token_id", chunk)
+        if source is not None:
+            query = query.eq("source", source)
+        query.execute()
+            
+    return len(to_delete)
 
 
 # ---------------------------------------------------------
@@ -113,11 +155,15 @@ def fetch_all_listings_for_collection(
         if next_cursor:
             url += f"?next={next_cursor}"
 
-        res = requests.get(url, headers=headers, timeout=20)
-        if res.status_code == 404:
-            return []
-        res.raise_for_status()
-        data = res.json()
+        try:
+            res = requests.get(url, headers=headers, timeout=20)
+            if res.status_code == 404:
+                return []
+            res.raise_for_status()
+            data = res.json()
+        except Exception as e:
+            print(f"Error fetching listings for {collection_slug}: {e}")
+            break
 
         for item in data.get("listings", []):
             params = item.get("protocol_data", {}).get("parameters", {})
@@ -132,7 +178,7 @@ def fetch_all_listings_for_collection(
 
             listings.append(
                 {
-                    "token_id": token_id,
+                    "token_id": str(token_id),
                     "price_eth": eth_price,
                     "owner": owner,
                 }
@@ -143,7 +189,6 @@ def fetch_all_listings_for_collection(
             break
 
     return listings
-
 
 
 def reduce_to_floor_per_token(
@@ -170,69 +215,93 @@ def reduce_to_floor_per_token(
 
 
 # ---------------------------------------------------------
-# Sync OpenSea Originals -> vv_checks_listings
+# Sync Logic
 # ---------------------------------------------------------
-def sync_opensea_originals(table_name: str) -> None:
-    collection_slug = "vv-checks-originals"
-    source = "opensea"
-
+def sync_opensea_collection(
+    collection_slug: str, 
+    table_name: str, 
+    source: str | None = None
+) -> None:
+    """
+    Generic sync for OpenSea collections.
+    Fetches listings, reduces to floor, fetches best offers (concurrently),
+    upserts to DB, and deletes stale tokens.
+    """
     listings = fetch_all_listings_for_collection(collection_slug)
     floor_listings = reduce_to_floor_per_token(listings)
     
-    print(f"[originals] Processing {len(floor_listings)} listings...")
-    offers_set = 0
+    print(f"[{collection_slug}] Processing {len(floor_listings)} listings...")
     
-    for row in floor_listings:
-        tid = row["token_id"]
+    # Concurrently fetch best offers
+    offers_set = 0
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_token = {
+            executor.submit(fetch_best_offer_eth, collection_slug, row["token_id"]): row 
+            for row in floor_listings
+        }
         
-        # Always fetch individual offer
-        ho = fetch_best_offer_eth(collection_slug, tid)
-        if ho is not None:
-            row["highest_offer_eth"] = ho
-            offers_set += 1
+        for future in as_completed(future_to_token):
+            row = future_to_token[future]
+            try:
+                ho = future.result()
+                if ho is not None:
+                    row["highest_offer_eth"] = ho
+                    offers_set += 1
+            except Exception as exc:
+                print(f"[{collection_slug}] Error fetching offer for token {row['token_id']}: {exc}")
 
-    batch_size = 100
     now_ts = datetime.now(timezone.utc).isoformat()
 
-
-    # Upsert: if token existed (maybe from older OpenSea listing), update it.
-    for i in range(0, len(floor_listings), batch_size):
-        batch = floor_listings[i : i + batch_size]
-        for row in batch:
-            row["last_seen_at"] = now_ts
+    # Prepare batch
+    for row in floor_listings:
+        row["last_seen_at"] = now_ts
+        if source:
             row["source"] = source
 
-        supabase.table(table_name).upsert(
-            batch,
-            on_conflict="token_id",  # single PK
-        ).execute()
+    # Upsert
+    batch_upsert(table_name, floor_listings)
+    print(f"[{collection_slug}] Highest offers set: {offers_set}")
 
-    print(f"[originals] Highest offers set: {offers_set}")
-
-    # Delete tokens that are no longer listed on OpenSea *and* currently have source='opensea'
-    current_token_ids = {l["token_id"] for l in floor_listings}
-    existing_opensea_ids = get_existing_token_ids(table_name, source="opensea")
-
-    to_delete = list(existing_opensea_ids - current_token_ids)
-
-    if to_delete:
-        for i in range(0, len(to_delete), batch_size):
-            chunk = to_delete[i : i + batch_size]
-            (
-                supabase.table(table_name)
-                .delete()
-                .eq("source", "opensea")
-                .in_("token_id", chunk)
-                .execute()
-            )
-        print(f"[originals] Deleted stale tokens: {len(to_delete)}")
+    # Delete stale
+    current_ids = {l["token_id"] for l in floor_listings}
+    deleted_count = delete_stale_tokens(table_name, current_ids, source=source)
+    
+    if deleted_count > 0:
+        print(f"[{collection_slug}] Deleted stale tokens: {deleted_count}")
     else:
-        print("[originals] No stale tokens to delete")
+        print(f"[{collection_slug}] No stale tokens to delete")
 
 
-# ---------------------------------------------------------
-# TokenWorks: fetch owned Checks + nftForSale prices
-# ---------------------------------------------------------
+def sync_tokenworks(table_name: str) -> None:
+    """
+    Sync TokenWorks listings into vv_checks_listings with source='tokenworks'.
+    """
+    listings = fetch_tokenworks_listings(table_name)
+    
+    print(f"[tokenworks] Processing {len(listings)} listings (skipping offers)...")
+    
+    now_ts = datetime.now(timezone.utc).isoformat()
+    
+    # Prepare batch
+    for row in listings:
+        row["highest_offer_eth"] = None # Explicitly clear offers
+        row["last_seen_at"] = now_ts
+        row["source"] = "tokenworks"
+
+    # Upsert
+    batch_upsert(table_name, listings)
+    print(f"[tokenworks] Upserted listings: {len(listings)}")
+
+    # Delete stale
+    current_ids = {l["token_id"] for l in listings}
+    deleted_count = delete_stale_tokens(table_name, current_ids, source="tokenworks")
+    
+    if deleted_count > 0:
+        print(f"[tokenworks] Deleted stale tokens: {deleted_count}")
+    else:
+        print(f"[tokenworks] No stale tokens to delete")
+
+
 def fetch_tokenworks_check_token_ids() -> List[str]:
     """
     Use Alchemy getNFTs to fetch all Checks Originals owned by TokenWorks.
@@ -250,9 +319,13 @@ def fetch_tokenworks_check_token_ids() -> List[str]:
             params["pageKey"] = page_key
 
         url = f"{ALCHEMY_BASE_URL}/getNFTs"
-        resp = requests.get(url, params=params, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            resp = requests.get(url, params=params, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+             print(f"[tokenworks] Error fetching NFTs: {e}")
+             break
 
         for nft in data.get("ownedNfts", []):
             raw_id = nft["id"]["tokenId"]  # hex string like "0x1234"
@@ -268,17 +341,12 @@ def fetch_tokenworks_check_token_ids() -> List[str]:
 
 def fetch_tokenworks_listings(table_name: str) -> List[Dict[str, Any]]:
     """
-    For each Checks token owned by TokenWorks:
-      1. Check if we already have a valid price in the DB (source='tokenworks').
-      2. If yes, use that (skip on-chain call).
-      3. If no (or price is null), call nftForSale(tokenId) on-chain.
-    Returns active listings (price > 0).
+    Fetch TokenWorks listings, using cached prices if available.
     """
     token_ids = fetch_tokenworks_check_token_ids()
     listings: List[Dict[str, Any]] = []
 
     # 1) Fetch existing cached prices to minimize RPC calls
-    # We only care about rows where source='tokenworks'
     try:
         resp = (
             supabase.table(table_name)
@@ -287,7 +355,6 @@ def fetch_tokenworks_listings(table_name: str) -> List[Dict[str, Any]]:
             .execute()
         )
         db_rows = resp.data or []
-        # Map token_id -> price_eth
         db_map = {str(row["token_id"]): row["price_eth"] for row in db_rows}
     except Exception as e:
         print(f"[tokenworks] Error fetching existing rows: {e}")
@@ -295,11 +362,10 @@ def fetch_tokenworks_listings(table_name: str) -> List[Dict[str, Any]]:
 
     print(f"[tokenworks] Found {len(token_ids)} owned tokens. Checking prices...")
 
-    for idx, token_id in enumerate(token_ids):
+    for token_id in token_ids:
         # Check cache first
         cached_price = db_map.get(token_id)
         
-        # If we have a valid cached price, use it and skip RPC
         if cached_price is not None:
             listings.append(
                 {
@@ -334,131 +400,27 @@ def fetch_tokenworks_listings(table_name: str) -> List[Dict[str, Any]]:
     return listings
 
 
-def sync_tokenworks(table_name: str) -> None:
-    """
-    Sync TokenWorks listings into vv_checks_listings with source='tokenworks'.
-    This will overwrite any existing row for that token_id (e.g. older OpenSea row).
-    We explicitly set highest_offer_eth to None as these listings don't accept WETH offers.
-    """
-    listings = fetch_tokenworks_listings(table_name)
-    
-    print(f"[tokenworks] Processing {len(listings)} listings (skipping offers)...")
-    
-    # Explicitly clear offers
-    for row in listings:
-        row["highest_offer_eth"] = None
-    
-    batch_size = 100
-    now_ts = datetime.now(timezone.utc).isoformat()
-    current_ids = {l["token_id"] for l in listings}
-    existing_tokenworks_ids = get_existing_token_ids(table_name, source="tokenworks")
-
-    # Upsert
-    for i in range(0, len(listings), batch_size):
-        batch = listings[i : i + batch_size]
-        for row in batch:
-            row["last_seen_at"] = now_ts
-            row["source"] = "tokenworks"
-
-        supabase.table(table_name).upsert(
-            batch,
-            on_conflict="token_id",  # single PK
-        ).execute()
-    print(f"[tokenworks] Upserted listings: {len(listings)}")
-
-    # Delete stale TokenWorks rows
-    to_delete = list(existing_tokenworks_ids - current_ids)
-    if to_delete:
-        for i in range(0, len(to_delete), batch_size):
-            chunk = to_delete[i : i + batch_size]
-            (
-                supabase.table(table_name)
-                .delete()
-                .eq("source", "tokenworks")
-                .in_("token_id", chunk)
-                .execute()
-            )
-        print(f"[tokenworks] Deleted stale tokens: {len(to_delete)}")
-    else:
-        print("[tokenworks] No stale tokens to delete")
-
-
-# ---------------------------------------------------------
-# Editions: keep using a separate table (vv_editions_listings)
-# ---------------------------------------------------------
-def sync_editions(table_name: str = "vv_editions_listings") -> None:
-    """
-    Sync OpenSea Editions (vv-checks) into vv_editions_listings.
-    Editions live in their own table; no source column needed.
-    """
-    collection_slug = "vv-checks"
-    listings = fetch_all_listings_for_collection(collection_slug)
-    floor_listings = reduce_to_floor_per_token(listings)
-
-    batch_size = 100
-    now_ts = datetime.now(timezone.utc).isoformat()
-
-    print(f"[editions] Processing {len(floor_listings)} listings...")
-    offers_set = 0
-    for row in floor_listings:
-        tid = row["token_id"]
-        
-        ho = fetch_best_offer_eth(collection_slug, tid)
-        if ho is not None:
-            row["highest_offer_eth"] = ho
-            offers_set += 1
-
-    for i in range(0, len(floor_listings), batch_size):
-        batch = floor_listings[i : i + batch_size]
-        for row in batch:
-            row["last_seen_at"] = now_ts
-
-        supabase.table(table_name).upsert(
-            batch,
-            on_conflict="token_id",
-        ).execute()
-    print(f"[editions] Highest offers set: {offers_set}")
-
-    # Delete stale editions
-    current_ids = {l["token_id"] for l in floor_listings}
-    existing_ids = get_existing_token_ids(table_name, source=None)
-    to_delete = list(existing_ids - current_ids)
-
-    if to_delete:
-        for i in range(0, len(to_delete), batch_size):
-            chunk = to_delete[i : i + batch_size]
-            (
-                supabase.table(table_name)
-                .delete()
-                .in_("token_id", chunk)
-                .execute()
-            )
-        print(f"[editions] Deleted stale tokens: {len(to_delete)}")
-    else:
-        print("[editions] No stale tokens to delete")
-
-
-# ---------------------------------------------------------
-# VValue tracking snapshot
-# ---------------------------------------------------------
- 
-
-
 # ---------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------
+# Expose the old function names for backward compatibility if needed, 
+# or just wrap the new generic one.
+def sync_opensea_originals(table_name: str) -> None:
+    sync_opensea_collection("vv-checks-originals", table_name, source="opensea")
+
+def sync_editions(table_name: str) -> None:
+    sync_opensea_collection("vv-checks", table_name, source=None)
+
 if __name__ == "__main__":
     ORIGINALS_TABLE = "vv_checks_listings"
-    ORIGINALS_COLLECTION_SLUG = "vv-checks-originals"
 
     # 1) OpenSea Originals -> shared table
     sync_opensea_originals(ORIGINALS_TABLE)
 
-    # 2) TokenWorks Originals -> same table, overwriting same token_id when applicable
+    # 2) TokenWorks Originals -> same table
     sync_tokenworks(ORIGINALS_TABLE)
 
     # 3) Editions stay separate
     sync_editions("vv_editions_listings")
-
 
     print("\nAll syncs completed ✅")
