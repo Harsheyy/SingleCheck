@@ -3,8 +3,8 @@ import { supabase } from "../lib/supabase";
 import osLogo from "./svg/OS.svg";
 import twLogo from "./svg/TW.jpg";
 
-// Image URL from Figma
-const imgPolygon1 = "http://localhost:3845/assets/15bd32f59846ae19f87bc770bc718256d1a192c6.svg";
+// Image URL from Figma removed
+
 
 const EDITIONS_CONTRACT_ADDRESS = '0x34eebee6942d8def3c125458d1a86e0a897fd6f9';
 
@@ -480,18 +480,19 @@ export default function CuratorValue() {
                                 right: "6.7%",
                                 top: 0
                               }}>
-                                <img 
-                                  alt="" 
-                                  src={imgPolygon1} 
-                                  style={{ width: "100%", height: "100%", display: "block" }}
-                                  onError={(e) => {
-                                    e.target.style.display = "none";
-                                    e.target.parentElement.style.borderLeft = "4px solid #333";
-                                    e.target.parentElement.style.borderRight = "4px solid transparent";
-                                    e.target.parentElement.style.borderTop = "4px solid transparent";
-                                    e.target.parentElement.style.borderBottom = "4px solid transparent";
-                                  }}
-                                />
+                                <svg 
+                                  width="100%" 
+                                  height="100%" 
+                                  viewBox="0 0 8 5" 
+                                  fill="none" 
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  style={{ display: "block" }}
+                                >
+                                  <path 
+                                    d="M4 0L8 5H0L4 0Z" 
+                                    fill="#fff"
+                                  />
+                                </svg>
                               </div>
                             </div>
                           </div>
